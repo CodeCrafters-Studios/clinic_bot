@@ -3,6 +3,8 @@ const qrcode = require('qrcode-terminal');
 const dayjs = require('dayjs');
 const { GoogleSpreadsheet } = require('google-spreadsheet');
 
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
 const client = new Client({
     authStrategy: new LocalAuth()
 });
@@ -96,6 +98,8 @@ client.on('ready', () => {
 client.on('message', async msg => {
     const text = msg.body.trim().toLowerCase();
     const user = msg.from;
+    const chat = await msg.getChat();
+    await chat.sendSeen();
 
     if (!sessions[user]) {
         sessions[user] = { step: 'MENU', history: [] };
@@ -105,26 +109,21 @@ client.on('message', async msg => {
 
     // ========= GLOBAL COMMAND =========
 
-    // CANCEL
-    if (text === '#') {
-        delete sessions[user];
-        return msg.reply(
-            '❌ *Booking dibatalkan*\n\nKetik *menu* untuk mulai lagi.'
-        );
-    }
-
-    // BACK
-    if (text === '9') {
-        session.step =
-            session.history.length > 0 ? session.history.pop() : 'MENU';
-
-        return msg.reply('🔙 Kembali ke langkah sebelumnya');
-    }
+    const humanReply = async (message) => {
+        try {
+            await chat.sendStateTyping();
+            const typingTime = Math.floor(Math.random() * 2000) + 1500;
+            await sleep(typingTime);
+            return await msg.reply(message);
+        } catch (err) {
+            console.error("Gagal mengirim pesan (humanReply):", err);
+        }
+    };
 
     // MENU
     if (text === '0' || text === 'menu' || text === 'halo') {
         sessions[user] = { step: 'MENU', history: [] };
-        return msg.reply(
+        return humanReply(
             '🦷 *Klinik Gigi Elsaa*\n' +
             '🕒 Jam praktek: 12.00 – 19.30\n\n' +
             'Pilih menu:\n' +
@@ -134,11 +133,28 @@ client.on('message', async msg => {
         );
     }
 
+    // CANCEL
+    if (text === '#') {
+        delete sessions[user];
+        return humanReply(
+            '❌ *Booking dibatalkan*\n\nKetik *menu* untuk mulai lagi.'
+        );
+    }
+
+    // BACK
+    if (text === '9') {
+        session.step =
+            session.history.length > 0 ? session.history.pop() : 'MENU';
+
+        return humanReply('🔙 Kembali ke langkah sebelumnya');
+    }
+
+
     // ========= MENU =========
     if (session.step === 'MENU') {
         if (text === '1') {
             goToStep(session, 'PILIH_LAYANAN');
-            return msg.reply(
+            return humanReply(
                 'Pilih jenis layanan:\n' +
                 Object.entries(layananMap)
                     .map(([k, v]) => `${k}. ${v}`)
@@ -148,12 +164,12 @@ client.on('message', async msg => {
         }
 
         if (text === '2') {
-            return msg.reply('🕒 Jam praktek: 12.00 – 19.30' +
+            return humanReply('🕒 Jam praktek: 12.00 – 19.30' +
                 '\n\n0. Kembali');
         }
 
         if (text === '3') {
-            return msg.reply(
+            return humanReply(
                 'Jenis layanan:\n' + Object.values(layananMap).join('\n') +
                 '\n\n0. Kembali'
             );
@@ -163,13 +179,13 @@ client.on('message', async msg => {
     // ========= PILIH LAYANAN =========
     if (session.step === 'PILIH_LAYANAN') {
         if (!layananMap[text]) {
-            return msg.reply('Pilih angka 1–7 ya 🙂');
+            return humanReply('Pilih angka 1–7 ya 🙂');
         }
 
         session.layanan = layananMap[text];
         goToStep(session, 'PILIH_TANGGAL');
 
-        return msg.reply(
+        return humanReply(
             'Masukkan tanggal appointment\n' +
             'Format: YYYY-MM-DD\n\n9. Kembali\n0. Menu\n#. Batal'
         );
@@ -178,7 +194,7 @@ client.on('message', async msg => {
     // ========= PILIH TANGGAL =========
     if (session.step === 'PILIH_TANGGAL') {
         if (!dayjs(text, 'YYYY-MM-DD', true).isValid()) {
-            return msg.reply('Format salah. Contoh: 2026-02-15');
+            return humanReply('Format salah. Contoh: 2026-02-15');
         }
 
         session.tanggal = text;
@@ -189,13 +205,13 @@ client.on('message', async msg => {
 
         if (available.length === 0) {
             delete sessions[user];
-            return msg.reply('❌ Semua jam di tanggal ini sudah penuh.');
+            return humanReply('❌ Semua jam di tanggal ini sudah penuh.');
         }
 
         session.availableSlots = available;
         goToStep(session, 'PILIH_JAM');
 
-        return msg.reply(
+        return humanReply(
             'Pilih jam tersedia:\n' +
             available.map((s, i) => `${i + 1}. ${s}`).join('\n') +
             '\n\n9. Kembali\n0. Menu\n#. Batal'
@@ -207,13 +223,13 @@ client.on('message', async msg => {
         const index = parseInt(text);
 
         if (isNaN(index) || !session.availableSlots[index - 1]) {
-            return msg.reply('Pilih jam yang tersedia ya 🙂');
+            return humanReply('Pilih jam yang tersedia ya 🙂');
         }
 
         session.jam = session.availableSlots[index - 1];
         goToStep(session, 'KONFIRMASI');
 
-        return msg.reply(
+        return humanReply(
             '🦷 *Konfirmasi Appointment*\n\n' +
             `Layanan: ${session.layanan}\n` +
             `Tanggal: ${session.tanggal}\n` +
@@ -223,31 +239,40 @@ client.on('message', async msg => {
     }
 
     // ========= KONFIRMASI =========
+    // ========= KONFIRMASI =========
     if (session.step === 'KONFIRMASI') {
         if (text === '1') {
-            await saveToSheet({
-                nama: msg._data.notifyName || '-',
-                nohp: user,
-                layanan: session.layanan,
-                tanggal: session.tanggal,
-                jam: session.jam
-            });
+            try {
+                await saveToSheet({
+                    nama: msg._data.notifyName || '-',
+                    nohp: user,
+                    layanan: session.layanan,
+                    tanggal: session.tanggal,
+                    jam: session.jam
+                });
 
-            await client.sendMessage(
-                ADMIN_NUMBER,
-                '📢 *BOOKING BARU*\n\n' +
-                `Nama: ${msg._data.notifyName || '-'}\n` +
-                `No HP: ${user}\n` +
-                `Layanan: ${session.layanan}\n` +
-                `Tanggal: ${session.tanggal}\n` +
-                `Jam: ${session.jam}`
-            );
+                // Bungkus notifikasi admin agar jika gagal, bot tidak mati
+                try {
+                    await client.sendMessage(
+                        ADMIN_NUMBER,
+                        '📢 *BOOKING BARU*\n\n' +
+                        `Nama: ${msg._data.notifyName || '-'}\n` +
+                        `No HP: ${user}\n` +
+                        `Layanan: ${session.layanan}\n` +
+                        `Tanggal: ${session.tanggal}\n` +
+                        `Jam: ${session.jam}`
+                    );
+                } catch (adminErr) {
+                    console.error("Gagal mengirim notifikasi ke Admin:", adminErr);
+                }
 
-            delete sessions[user];
+                delete sessions[user];
 
-            return msg.reply(
-                '✅ *Appointment berhasil dicatat*\nAdmin akan menghubungi Anda.'
-            );
+                return await humanReply('✅ *Appointment berhasil dicatat*\nAdmin akan menghubungi Anda.');
+            } catch (error) {
+                console.error("Gagal menyimpan ke Sheet:", error);
+                return await humanReply('❌ Terjadi kesalahan saat menyimpan data. Silakan coba lagi nanti.');
+            }
         }
     }
 });
